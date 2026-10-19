@@ -1,4 +1,4 @@
-RepoGrill 🔥
+#RepoGrill 
 Defending source code under fire.
 
 An automated technical interview prep bot that sets engineering and CS students up for success for their technical interviews by quizzing them on their own code.
