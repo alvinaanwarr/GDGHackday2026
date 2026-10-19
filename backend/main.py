@@ -1,18 +1,11 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import ast
+import uuid
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import json
-import uuid
 
-from github_service import fetch_github_repo_files
-from target_finder import extract_targets_from_repo
-from llm_grill import (
-    generate_adversarial_question,
-    evaluate_candidate_defense,
-    explain_language_internals
-)
-
-app = FastAPI(title="RepoGrill API", version="1.0.0")
+app = FastAPI(title="RepoGrill Gauntlet Engine", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,119 +15,125 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory store for active sessions
-SESSIONS = {}
+class CodeSubmission(BaseModel):
+    code: str
+    language: str
+    source: str
 
-class AnalyzeRepoRequest(BaseModel):
-    repo_url: str
+class AstTarget(BaseModel):
+    id: str
+    lineStart: int
+    lineEnd: int
+    category: str
+    threatLevel: str
+    ruleTitle: str
+    codeSnippet: str
 
-@app.post("/api/analyze")
-async def analyze_repo(req: AnalyzeRepoRequest):
+class InterrogationQuestion(BaseModel):
+    id: str
+    architectName: str
+    threatBadge: str
+    question: str
+    timestamp: str
+    targetLineStart: Optional[int] = None
+    targetLineEnd: Optional[int] = None
+
+class GrillResponse(BaseModel):
+    threatLevel: str
+    astTargets: List[AstTarget]
+    openingQuestions: List[InterrogationQuestion]
+    systemAnalysis: str
+
+def parse_python_ast(code: str) -> List[AstTarget]:
+    targets = []
+    lines = code.splitlines()
     try:
-        files, repo_name = await fetch_github_repo_files(req.repo_url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        tree = ast.parse(code)
+    except Exception:
+        return targets
 
-    targets = extract_targets_from_repo(files)
-    if not targets:
-        # Fallback target if repo is clean
-        first_file = next(iter(files.keys()))
-        first_lines = files[first_file].splitlines()
-        targets.append({
-            "file": first_file,
-            "language": first_file.split(".")[-1],
-            "line_start": 1,
-            "line_end": min(15, len(first_lines)),
-            "category": "Architecture Structure",
-            "type": "Module Initialization & Architecture Strategy",
-            "code_snippet": "\n".join(first_lines[:15])
-        })
+    for node in ast.walk(tree):
+        # 1. Nested loops: O(N^2) complexity threat
+        if isinstance(node, (ast.For, ast.While)):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.For, ast.While)):
+                    start = node.lineno
+                    end = getattr(child, "end_lineno", start + 4)
+                    targets.append(AstTarget(
+                        id=str(uuid.uuid4())[:8],
+                        lineStart=start,
+                        lineEnd=end,
+                        category="Algorithmic Complexity",
+                        threatLevel="CRITICAL",
+                        ruleTitle="Nested Loop Iteration O(N²)",
+                        codeSnippet="\n".join(lines[start - 1 : end])
+                    ))
 
-    session_id = str(uuid.uuid4())
-    SESSIONS[session_id] = {
-        "repo_name": repo_name,
-        "files": files,
-        "targets": targets,
-        "current_target_index": 0,
-        "history": []
-    }
+        # 2. Broad Exception Swallowing
+        if isinstance(node, ast.ExceptHandler):
+            if node.type is None or (isinstance(node.type, ast.Name) and node.type.id in ["Exception", "BaseException"]):
+                start = node.lineno
+                end = getattr(node, "end_lineno", start + 2)
+                targets.append(AstTarget(
+                    id=str(uuid.uuid4())[:8],
+                    lineStart=start,
+                    lineEnd=end,
+                    category="Reliability & Error Handling",
+                    threatLevel="HIGH",
+                    ruleTitle="Broad Base Exception Swallowing",
+                    codeSnippet="\n".join(lines[start - 1 : end])
+                ))
+    return targets
 
-    return {
-        "session_id": session_id,
-        "repo_name": repo_name,
-        "targets_count": len(targets),
-        "targets": targets,
-        "active_file_content": files[targets[0]["file"]],
-        "active_target": targets[0]
-    }
+@app.post("/api/grill", response_model=GrillResponse)
+async def conduct_grill_assessment(payload: CodeSubmission):
+    code = payload.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Empty code buffer submitted.")
 
-@app.post("/api/deep-dive/{session_id}")
-async def get_deep_dive(session_id: str, target_index: int = 0):
-    session = SESSIONS.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    target = session["targets"][target_index]
-    explanation = await explain_language_internals(target)
-    return {"explanation": explanation}
+    ast_targets = []
+    if payload.language.lower() == "python":
+        ast_targets = parse_python_ast(code)
 
-@app.websocket("/ws/defense/{session_id}")
-async def defense_websocket(websocket: WebSocket, session_id: str):
-    await websocket.accept()
-    session = SESSIONS.get(session_id)
-    if not session:
-        await websocket.send_json({"error": "Session expired or invalid."})
-        await websocket.close()
-        return
+    # Heuristic fallback if language is not Python or AST finds no violations
+    if not ast_targets:
+        lines = code.splitlines()
+        ast_targets.append(AstTarget(
+            id=str(uuid.uuid4())[:8],
+            lineStart=1,
+            lineEnd=min(12, len(lines)),
+            category="System Topology",
+            threatLevel="MEDIUM",
+            ruleTitle="Module Initialization & Concurrency Safety",
+            codeSnippet="\n".join(lines[:min(12, len(lines))])
+        ))
 
-    # Trigger opening question for the current target
-    current_target = session["targets"][session["current_target_index"]]
-    opening_q = await generate_adversarial_question(current_target)
-    
-    session["history"].append({"role": "assistant", "content": opening_q})
-    await websocket.send_json({
-        "sender": "Interviewer",
-        "text": opening_q,
-        "target": current_target
-    })
+    primary_target = ast_targets[0]
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
-            action = payload.get("action")
+    gemma_ready_prompt = (
+        f"Examine lines {primary_target.lineStart}-{primary_target.lineEnd} in {payload.source}. "
+        f"Candidate implemented '{primary_target.ruleTitle}'. "
+        f"How does this routine behave under 15,000 RPS when memory limits are reached?"
+    )
 
-            if action == "defend":
-                candidate_text = payload.get("text", "")
-                session["history"].append({"role": "user", "content": candidate_text})
+    questions = [
+        InterrogationQuestion(
+            id=str(uuid.uuid4())[:8],
+            architectName="Principal Architect Thorne",
+            threatBadge=f"{primary_target.threatLevel} HAZARD DETECTED",
+            question=gemma_ready_prompt,
+            timestamp="Just now",
+            targetLineStart=primary_target.lineStart,
+            targetLineEnd=primary_target.lineEnd,
+        )
+    ]
 
-                interviewer_rebuttal = await evaluate_candidate_defense(
-                    session["history"], candidate_text, current_target
-                )
-                session["history"].append({"role": "assistant", "content": interviewer_rebuttal})
-
-                await websocket.send_json({
-                    "sender": "Interviewer",
-                    "text": interviewer_rebuttal
-                })
-
-            elif action == "switch_target":
-                new_idx = payload.get("target_index", 0)
-                session["current_target_index"] = new_idx
-                session["history"] = []
-                current_target = session["targets"][new_idx]
-                
-                opening_q = await generate_adversarial_question(current_target)
-                session["history"].append({"role": "assistant", "content": opening_q})
-                
-                await websocket.send_json({
-                    "sender": "Interviewer",
-                    "text": opening_q,
-                    "target": current_target,
-                    "file_content": session["files"][current_target["file"]]
-                })
-
-    except WebSocketDisconnect:
-        pass
+    return GrillResponse(
+        threatLevel=primary_target.threatLevel,
+        astTargets=ast_targets,
+        openingQuestions=questions,
+        systemAnalysis=f"Ingested {len(code.splitlines())} lines from {payload.source}. Flagged {len(ast_targets)} architectural hot-spots."
+    )
 
 if __name__ == "__main__":
     import uvicorn
