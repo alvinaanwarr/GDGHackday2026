@@ -35,8 +35,7 @@ Dev Environment	GitHub Codespaces / Linux	Zero-configuration cloud development c
 
 
 Repository File Structure
-code
-Text
+```text
 GDGHackday2026/
 ├── backend/
 │   ├── requirements.txt       # Python dependencies (FastAPI, Uvicorn, Pydantic)
@@ -58,40 +57,54 @@ GDGHackday2026/
 │
 ├── venv/                      # Python virtual environment
 └── README.md                  # System documentation
-
-COMPILE GUIDE**
+```
+## COMPILE GUIDE
 Prerequisites
 Python 3.10+
 Node.js 18+ & npm
 Step 1: Backend Setup
 Open a terminal in your project root:
-code
+```
 Bash
+```
 # 1. Move into the backend directory
+```
 cd backend
-
+```
 # 2. Activate the virtual environment
+```
 source ../venv/bin/activate    # On Windows: ..\venv\Scripts\activate
-
+```
 # 3. Install backend dependencies
+```
 pip install -r requirements.txt
+```
 
 # 4. Start the FastAPI engine
+```
 python main.py
+```
 The backend starts at http://0.0.0.0:8000.
 Interactive Swagger API documentation is available at http://localhost:8000/docs.
+
 Step 2: Frontend Setup
+
 Open a second terminal:
-code
+```
 Bash
+```
 # 1. Move into the frontend directory
+```
 cd frontend
-
+```
 # 2. Install node dependencies
+```
 npm install
-
+```
 # 3. Launch Vite dev server
+```
 npm run dev
+```
 Vite will start at http://localhost:5173 (or the forwarded port URL in GitHub Codespaces).
 📡 API Reference
 POST /api/grill
